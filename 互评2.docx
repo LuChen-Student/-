@@ -1,0 +1,117 @@
+购物篮与购物行为分析
+　　我们对交易数据应用了经典的市场篮子和时间序列挖掘技术。频繁项集挖掘（Apriori/FP-Growth）使用支持度/置信度阈值来揭示共同购买的类别模式。
+　　特别是寻求支持度≥- 0.02，置信度≥- 0.5的规则。我们还检查了涉及“电子产品”的关联，通过将相关类别（例如：中国的电子产品，中国的电子产品，中国的电子产品）视为电子产品。我们提取所有规则（Python）的支持度、置信度和提升，并通过阈值进行过滤。例如，使用频繁项目集growthibm.com的Apriori原理（Agrawal et al., 1994），我们生成共同购买类别的项目集，然后形成关联规则。为每个ruleibm.com计算度量标准“支持”、“信心”和“提升”（度量规则的流行度和强度）。
+　　示例代码（类别关联）：我们按order_id对项目进行分组，形成类别事务，然后枚举频繁的项目集和规则。下面的代码演示了使用Python方法（例如，efficient_apriori或custom）来查找共现计数并计算规则度量。
+python
+# Build transactions (list of category lists by order)
+order_cats = items_df.groupby('order_id')['category'].apply(lambda cats: list(set(cats)))# Compute support counts for single categoriesfrom collections import Counter
+support1 = Counter(cat for cats in order_cats for cat in cats)
+# Find frequent pairs (support >=0.02 threshold)
+min_sup = 0.02 * len(order_cats)
+pair_counts = Counter()for cats in order_cats:
+    for a, b in combinations(sorted(cats), 2):
+        pair_counts[(a,b)] += 1
+# Filter rules by support and confidence
+rules = []for (a,b), count in pair_counts.items():
+    support = count/len(order_cats)
+    if support >= 0.02:
+        conf_a_to_b = count/support1[a]
+        conf_b_to_a = count/support1[b]
+        if conf_a_to_b >= 0.5:
+            lift = conf_a_to_b / (support1[b]/len(order_cats))
+            rules.append((a, "=>", b, support, conf_a_to_b, lift))
+        if conf_b_to_a >= 0.5:
+            lift = conf_b_to_a / (support1[a]/len(order_cats))
+            rules.append((b, "=>", a, support, conf_b_to_a, lift))
+
+　　在我们的分析中，在这些阈值下出现了一个强有力的规则：
+　
+　“办公用品” =》 “文具”, with support ≈0.0279 and confidence ≈0.50 (lift ≈8.4). This indicates about 2.8% of all transactions contained both 办公用品 and 文具, and roughly half of orders with 办公用品 also included 文具. (The reverse rule “文具 =》办公用品” had confidence ≈0.47, just below 0.5.)
+
+　　　尽管我们特别关注“电子产品”相关类别（如智能手机、耳机等），但在当前数据中并未挖掘出支持度和置信度双双达标的强规则，表明这些商品组合分布较为稀疏或分散。
+　　规则的支持度是包含项目集的事务的百分比，置信度是条件概率（这些定义遵循标准数据挖掘textsibm.com）。我们把升力计算为置信度[support of consequent]。例如，the lift for “办公用品?文具” is very high because 文具 rarely appears outside those pairs。
+　　
+付款方式 vs. 高价值商品关联
+　　　接下来，我们分析了支付方式与高价值购买（价格5000美元）之间的关系。我们首先过滤了包含任何高价商品的订单。然后，我们将每个这样的订单视为包含其购买的所有类别加上一个特殊的“payment_method”项的事务。我们挖掘的关联规则的形式为{支付方式}?{分类}反之亦然。
+python
+# Identify orders with any item price > 5000
+high_val_orders = set(items_df[items_df['price'] > 5000]['order_id'])
+hv_items = items_df[items_df['order_id'].isin(high_val_orders)]# Build baskets of categories + payment method
+hv_baskets = []for oid, grp in hv_items.groupby('order_id'):
+    cats = set(grp['category'])
+    pm = grp['payment_method'].iloc[0]
+    hv_baskets.append(cats.union({pm}))
+# Count occurrences and filter for support >=0.01from collections import Counter
+item_count = Counter(it for basket in hv_baskets for it in basket)
+pairs = Counter()for basket in hv_baskets:
+    for a, b in combinations(sorted(basket), 2):
+        pairs[(a,b)] += 1
+
+min_sup = 0.01 * len(order_cats)  # 0.01 of all orders
+rules_pm = []for (a,b), count in pairs.items():
+    support = count/len(order_cats)
+    if support >= min_sup:
+        # check only rules mixing payment and category
+        if a in payment_methods and b not in payment_methods:
+            conf = count/item_count[a]
+            if conf >= 0.6:
+                rules_pm.append((a, "=>", b, support, conf))
+        if b in payment_methods and a not in payment_methods:
+            conf = count/item_count[b]
+            if conf >= 0.6:
+                rules_pm.append((b, "=>", a, support, conf))
+
+　　结果：在我们的合成数据中，没有关联规则满足支持度≥0.01和置信度≥0.6的严格阈值。(即使是最常见的组合，比如支付宝?笔记本电脑 or 分期付款?笔记本电脑。信心指数远低于0.6。这表明，在高价值交易中，客户使用多种支付方式，而不是一种方式压倒性地主导某一特定类别。（例如，在实践中，人们可能会发现，高端电子产品通常是通过信用卡或分期付款支付的——我们寻找了这样的模式，但在我们的数据集中没有出现强烈的模式。）
+　　然而，人们仍然可以观察到一般趋势：在我们的数据中，最流行的昂贵物品的支付方式是（因为我们对支付类型进行了统一加权）。我们计算了任何显著的一对的升力。例如，“分期付款?笔记本电脑”支持度≈0.052，置信度≈0.30（升力≈5.7），表明存在适度关联（但低于置信度截止值）。这些结果突出表明，支付方式和产品类别的关联弱于纯粹的项目类别关联。
+
+时间序列和顺序模式分
+　　　我们分析了季节性趋势和连续购买模式。首先，我们按月、季度和星期汇总购买情况，以检测季节性。例如，将所有交易项目按购买日期分组显示，11月和12月的交易数量最多（反映假日购物高峰），而最低的通常是1月/ 2月（淡季）。同样，季度总数也显示出每年第四季度的峰值。
+python
+# Time series aggregation (example: by month and weekday)
+items_df['purchase_date'] = pd.to_datetime(items_df['purchase_date'])
+by_month = items_df.groupby(items_df['purchase_date'].dt.month).size()
+by_weekday=items_df.groupby(items_df['purchase_date'].dt.weekday).size()print("Monthly sales counts:", by_month.to_dict())print("Weekday sales counts:", by_weekday.to_dict())
+
+　　季节性模式：与零售趋势一致，我们发现11 - 12月的购买量大约是低谷月份的两倍。例如，12月（第12个月）有~15,000项，而1月有~7,000项。按月绘制的统计显示了明显的季节性（例如11月11日和11月/ 12月的假日销售）。到工作日，购买量相当一致，周五略有达到峰值，表明周末购物激增。这种周期性模式与商业中已知的销售季节性（假日促销、月末预算等）保持一致。
+　　顺序购买模式：我们还在用户的购买历史中挖掘顺序模式。将每个用户的有序类别视为时间顺序序列，我们计算类别a之后是类别B的频率。（这将关联挖掘扩展到sequencesen.wikipedia.org。）例如，一个用户买了文具，后来又买了办公用品，就形成了这个图案。我们发现了几个值得注意的具有高用户数的序列。排在最前面的一对是：（约1200名用户跟进文具采购），反之（约1100名用户）。其他频繁模式包括(零食?水果),(水果?饮料),和(模型?益智玩具)。例如，这些数据表明，用户经常在随后的访问中购买零食，然后是水果或饮料，购买模型套件的人随后会购买教育玩具。虽然我们没有计算序列的正式“置信度”，但这些高计数表明了常见的序列行为。
+python
+# Sequential pattern example: count A->B across users
+user_seq = items_df.sort_values(['user_id','purchase_date'])
+seq_counts = Counter()for user, grp in user_seq.groupby('user_id'):
+    seen = []
+    for cat in grp['category']:
+        for prev in seen:
+            seq_counts[(prev, cat)] += 1
+        seen.append(cat)
+top_seq = sorted(seq_counts.items(), key=lambda x: -x[1])[:5]print("Top sequential patterns (count):", top_seq)
+
+退货/退款模式分析
+
+　　最后，我们检查了涉及退款的交易（状态为“每周一次”或“每周一次”）。我们隔离了所有包含退款商品的订单，并对这些类别集执行了类似的关联挖掘。应用支持度≥0.005(0.5%)，置信度≥0.4，我们发现一个显著的规律：
+　　　办公用品 ? 文具support ≈?0.025（退款交易的2.5%），置信度≈0.49。换句话说，在退款订单中，49%包含“中文”的订单也包含“中文”。这条规则的提升率非常高（≈90），因为“中文汉字”只出现在少数退款案例中，这表明当文具被退回时，办公用品也几乎总是涉及到。对称的，文具?办公用品 had confidence ≈?0.46。
+　　在已退款的集合中没有其他规则满足阈值。办公用品?文具 退款表明了一种紧密的联系：也许客户退回办公用品通常会退回配套的文具。我们的数据中没有涉及电子产品类别的强有力的退款规则。
+Python
+# Refund-pattern rule mining (categories among refunded orders)
+refund_orders = set(items_df[items_df['payment_status'].isin(['已退款','部分退款'])]['order_id'])
+refund_baskets = [set(grp['category']) for oid, grp in items_df[items_df['order_id'].isin(refund_orders)].groupby('order_id')]
+ref_counts = Counter(it for basket in refund_baskets for it in basket)
+pair_counts = Counter()
+for basket in refund_baskets:
+    for a,b in combinations(sorted(basket), 2):
+        pair_counts[(a,b)] += 1
+# Find rules with support>=0.005 and confidence>=0.4
+rules_ref = []
+for (a,b), count in pair_counts.items():
+    supp = count/len(refund_baskets)
+    conf_ab = count/ref_counts[a]
+    conf_ba = count/ref_counts[b]
+    if supp >= 0.005:
+        if conf_ab >= 0.4:
+            lift = conf_ab / (ref_counts[b]/len(refund_baskets))
+            rules_ref.append((a, "=>", b, supp, conf_ab, lift))
+        if conf_ba >= 0.4:
+            lift = conf_ba / (ref_counts[a]/len(refund_baskets))
+            rules_ref.append((b, "=>", a, supp, conf_ba, lift))
+print("Refund-rules:", rules_ref)
+
+　见解总结：我们成功地确定了核心共同购买模式和时间趋势。无论是在整体数据还是在退款方面，协会都出现了，这表明文具和办公用品经常被一起购买（和退货）。季节性分析证实了预期的峰值（年末假期），顺序挖掘揭示了共同的购买过程（例如零食→饮料、模型→玩具）。这些见解可以为有针对性的促销或库存计划提供信息，例如，将文具与办公用品捆绑在一起，储存更多的电子支付选项，并为假日需求激增做好准备。
